@@ -1,6 +1,12 @@
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { expect } from "vitest";
+// No longer needed as expect is not used here
 import "@testing-library/jest-dom";
+
+global.fetch = vi.fn(() =>
+  Promise.resolve(new Response(JSON.stringify({}), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  }))
+);
 import { vi } from "vitest";
 
 // Mock @tauri-apps/api/tauri for all tests

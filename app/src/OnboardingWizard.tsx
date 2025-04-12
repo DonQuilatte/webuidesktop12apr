@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import ProgressBar from './components/ProgressBar';
 
 const steps = [
   'Welcome & Privacy Overview',
@@ -29,6 +30,27 @@ export default function OnboardingWizard() {
   const [isOnline, setIsOnline] = useState<boolean | null>(null);
   const [netLoading, setNetLoading] = useState(false);
   const [netError, setNetError] = useState<string | null>(null);
+
+  // User-facing error state
+  const [userError, setUserError] = useState<string | null>(null);
+
+  // Fetch initial preferences on mount
+  useEffect(() => {
+    fetch('http://127.0.0.1:5002/preferences')
+      .then(res => {
+        if (!res.ok) {
+          throw new Error('Failed to fetch preferences');
+        }
+        return res.json();
+      })
+      .then(data => {
+        setPreferences(data);
+      })
+      .catch(error => {
+        console.error("Error fetching initial preferences:", error);
+        setUserError("Failed to fetch your preferences from the server. Default preferences will be used.");
+      });
+  }, []); // Empty dependency array ensures this runs only once on mount
 
   useEffect(() => {
     if (step === 1) {
@@ -75,13 +97,57 @@ export default function OnboardingWizard() {
     }
   }, [step]);
 
-  const next = () => setStep((s) => Math.min(s + 1, steps.length - 1));
+  const next = async () => {
+  // If leaving Preferences step (step 4), save preferences
+  if (step === 4) {
+    try {
+      await fetch('http://127.0.0.1:5002/preferences', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(preferences),
+      });
+    } catch (e) {
+      // Optionally handle error (e.g., show notification)
+      console.error('Failed to save preferences to backend.', e);
+      setUserError("Failed to save your preferences. Please check your connection and try again.");
+    }
+  }
+  setStep((s) => Math.min(s + 1, steps.length - 1));
+};
   const back = () => setStep((s) => Math.max(s - 1, 0));
+
+  // Helper function to submit telemetry events
+  const submitTelemetryEvent = async (event: string, details: Record<string, unknown> = {}) => {
+    if (!preferences.telemetry) return; // Only send if telemetry is enabled
+
+    try {
+      await fetch('http://127.0.0.1:5002/telemetry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event, details }),
+      });
+    } catch (e) {
+      console.error('Failed to submit telemetry event:', e);
+      setUserError("Failed to submit telemetry event. This will not affect your setup.");
+    }
+  };
 
   return (
     <div className="max-w-2xl mx-auto p-6">
       <h1 className="text-2xl font-bold mb-4">Setup Wizard</h1>
       <h2 className="text-xl font-semibold mb-2">{steps[step]}</h2>
+      {userError && (
+        <div className="mb-4 p-2 bg-red-100 text-red-700 border border-red-300 rounded">
+          {userError}
+          <button
+            className="ml-2 text-xs underline"
+            onClick={() => setUserError(null)}
+            aria-label="Dismiss error"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       <div className="border rounded p-4 mb-4 min-h-[150px] bg-gray-50 dark:bg-gray-800">
         {step === 0 && (
           <div>
@@ -161,9 +227,12 @@ export default function OnboardingWizard() {
                   type="checkbox"
                   className="form-checkbox"
                   checked={!!preferences.telemetry}
-                  onChange={() =>
-                    setPreferences((p) => ({ ...p, telemetry: !p.telemetry }))
-                  }
+                  onChange={() => {
+                    const newTelemetryValue = !preferences.telemetry;
+                    setPreferences((p) => ({ ...p, telemetry: newTelemetryValue }));
+                    // Submit telemetry event immediately when changed
+                    submitTelemetryEvent('telemetry_preference_changed', { enabled: newTelemetryValue });
+                  }}
                 />
                 <span>Allow anonymous telemetry to improve the app</span>
               </label>
@@ -230,14 +299,23 @@ export default function OnboardingWizard() {
           <button
             onClick={async () => {
               try {
+                // Save preferences
+                await fetch('http://127.0.0.1:5002/preferences', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(preferences),
+                });
+                // Notify backend onboarding is complete
                 await fetch('http://127.0.0.1:5002/onboarding', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify(preferences),
                 });
+                // Submit telemetry event for onboarding completion
+                submitTelemetryEvent('onboarding_completed', { final_preferences: preferences });
                 alert('Setup Complete!');
               } catch (e) {
-                alert('Failed to save preferences to backend.');
+                alert('Failed to save preferences or onboarding to backend.');
               }
             }}
             className="px-4 py-2 rounded bg-green-600 text-white"
@@ -272,12 +350,7 @@ function BackendDownloadStep() {
   return (
     <div>
       <p className="mb-4">Downloading backend components...</p>
-      <div className="w-full bg-gray-300 rounded h-4 mb-4">
-        <div
-          className="bg-blue-600 h-4 rounded"
-          style={{ width: `${progress}%` }}
-        ></div>
-      </div>
+      <ProgressBar value={progress} className="mb-4" />
       <p className="mb-4">{progress}%</p>
       {!downloading && progress < 100 && (
         <button

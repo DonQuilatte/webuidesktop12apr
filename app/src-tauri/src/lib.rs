@@ -1,7 +1,159 @@
 use std::process::{Child, Command};
 use std::sync::Mutex;
-use tauri::Manager; // Import the Manager trait
-use sysinfo::System; // Only System is needed now
+use std::fs;
+use std::path::PathBuf;
+use tauri::Manager;
+use sysinfo::System;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use chrono::Utc;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct Preferences {
+    telemetry: bool,
+    theme: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct TelemetryEvent {
+    event: String,
+    details: HashMap<String, serde_json::Value>,
+    timestamp: String,
+}
+
+fn get_preferences_path() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join("preferences.json")
+}
+
+fn get_telemetry_path() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join("telemetry.log")
+}
+
+fn get_onboarding_path() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join("onboarding_complete.json")
+}
+
+#[tauri::command]
+fn get_preferences() -> Result<serde_json::Value, String> {
+    let path = get_preferences_path();
+    
+    if !path.exists() {
+        return Ok(serde_json::json!({
+            "preferences": {
+                "telemetry": false,
+                "theme": "light"
+            }
+        }));
+    }
+    
+    match fs::read_to_string(&path) {
+        Ok(content) => {
+            match serde_json::from_str::<Preferences>(&content) {
+                Ok(prefs) => Ok(serde_json::json!({ "preferences": prefs })),
+                Err(e) => {
+                    eprintln!("Error parsing preferences: {:?}", e);
+                    Ok(serde_json::json!({
+                        "preferences": {
+                            "telemetry": false,
+                            "theme": "light"
+                        }
+                    }))
+                }
+            }
+        },
+        Err(e) => {
+            eprintln!("Error reading preferences file: {:?}", e);
+            Ok(serde_json::json!({
+                "preferences": {
+                    "telemetry": false,
+                    "theme": "light"
+                }
+            }))
+        }
+    }
+}
+
+#[tauri::command]
+fn save_preferences(preferences: Preferences) -> Result<serde_json::Value, String> {
+    let path = get_preferences_path();
+    
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directories: {}", e))?;
+        }
+    }
+    
+    let json = serde_json::to_string_pretty(&preferences)
+        .map_err(|e| format!("Failed to serialize preferences: {}", e))?;
+    
+    fs::write(&path, json)
+        .map_err(|e| format!("Failed to write preferences: {}", e))?;
+    
+    Ok(serde_json::json!({ "success": true }))
+}
+
+#[tauri::command]
+fn save_onboarding_data(data: Preferences) -> Result<serde_json::Value, String> {
+    let path = get_onboarding_path();
+    
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directories: {}", e))?;
+        }
+    }
+    
+    let completion_data = serde_json::json!({
+        "completed": true,
+        "timestamp": Utc::now().to_rfc3339(),
+        "preferences": data
+    });
+    
+    let json = serde_json::to_string_pretty(&completion_data)
+        .map_err(|e| format!("Failed to serialize onboarding data: {}", e))?;
+    
+    fs::write(&path, json)
+        .map_err(|e| format!("Failed to write onboarding data: {}", e))?;
+    
+    Ok(serde_json::json!({ "success": true }))
+}
+
+#[tauri::command]
+fn store_telemetry_event(event: String, details: HashMap<String, serde_json::Value>) -> Result<serde_json::Value, String> {
+    let path = get_telemetry_path();
+    
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directories: {}", e))?;
+        }
+    }
+    
+    let telemetry_event = TelemetryEvent {
+        event,
+        details,
+        timestamp: Utc::now().to_rfc3339(),
+    };
+    
+    let json = serde_json::to_string(&telemetry_event)
+        .map_err(|e| format!("Failed to serialize telemetry event: {}", e))?;
+    
+    let content = format!("{}\n", json);
+    
+    let result = if path.exists() {
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .and_then(|mut file| std::io::Write::write_all(&mut file, content.as_bytes()))
+    } else {
+        fs::write(&path, content)
+    };
+    
+    result.map_err(|e| format!("Failed to store telemetry event: {}", e))?;
+    
+    Ok(serde_json::json!({ "success": true }))
+}
 
 #[tauri::command]
 fn get_os_info() -> String {
@@ -39,7 +191,11 @@ pub fn run() {
       get_os_info,
       get_disk_space,
       get_memory_info,
-      check_network_status // Add the new command
+      check_network_status,
+      get_preferences,
+      save_preferences,
+      save_onboarding_data,
+      store_telemetry_event
     ])
     .manage(BackendProcess(Mutex::new(None)))
     .setup(|app| {
@@ -83,9 +239,9 @@ pub fn run() {
 
       Ok(())
     })
-    .on_window_event(|window, event| { // Update closure signature
+    .on_window_event(|window, event| { 
       if let tauri::WindowEvent::CloseRequested { .. } = event {
-        let backend_state = window.state::<BackendProcess>(); // Use window.state()
+        let backend_state = window.state::<BackendProcess>(); 
         let mut lock = backend_state.0.lock().unwrap();
         if let Some(child) = lock.as_mut() {
           let _ = child.kill();

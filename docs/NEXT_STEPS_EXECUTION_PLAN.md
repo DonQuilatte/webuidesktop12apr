@@ -5,51 +5,60 @@
 - **PRD**: Clear goals—privacy-first, zero-CLI, cross-platform, local-only data. Features and non-goals are well defined.
 - **Plan**: NEXT_STEPS_PLAN.md is up to date and identifies current state, gaps, and next steps.
 - **Frontend (OnboardingWizard.tsx)**:
-  - Steps 0–5 UI is implemented. Logic for steps 0-3 is present. Logic for steps 4-5 (preferences/telemetry) is UI-only and needs backend integration.
+  - Steps 0–5 UI is fully implemented with a modern design system featuring step indicators, custom form elements, dark/light mode support, and enhanced visual feedback.
+  - All steps now have complete logic with local storage integration.
+  - System Compatibility Check screen enhanced with status indicators (good, warning, critical) and gradient progress bars.
 - **Backend (main.py)**:
   - API includes `/health`, `/preferences` (GET/POST), `/onboarding` (POST), and `/telemetry` (POST) endpoints.
-- **Testing**: Unit tests pass for frontend (steps 0-3) and backend (`/health`). Tests are missing for new UI steps and new backend endpoints. E2E tests cover basic flow but need expansion.
-- **Packaging/Distribution**: No automation for Tauri or PyInstaller builds yet.
+  - Application can now function without the backend server by using Tauri's local storage capabilities.
+- **Local Storage**:
+  - Implemented Tauri commands for preferences management: `get_preferences`, `save_preferences`, `save_onboarding_data`, and `store_telemetry_event`.
+  - Updated API service to use these commands instead of HTTP requests.
+- **Testing**: Unit tests pass for frontend (all steps) and backend (`/health`). Tests for new UI steps have been updated to properly mock Tauri invoke commands. E2E tests cover basic flow but need expansion.
+- **Packaging/Distribution**: Build automation scripts created (see `/scripts`). Testing and CI integration still needed. CSP port mismatch resolved.
 - **Docs**: PRD and rules are up to date; feature-specific docs may be missing.
 
 ---
 
 ## 2. Proposed Next Steps
 
-### A. Product/Feature Development
-- **Integrate Frontend and Backend**
-  - Connect onboarding wizard (steps 4-5) to backend endpoints (`/preferences`, `/telemetry`) for data persistence and retrieval.
-- **Integrate Frontend and Backend**
-  - Connect onboarding wizard to backend endpoints for data persistence and retrieval.
+### A. Product/Feature Development (Highest Priority)
+- **Expand Application Features**
+  - Implement additional features based on user feedback.
+  - Consider adding cloud synchronization as an optional feature.
 
-### B. Privacy & Security
-- **Define Privacy Guarantees**
-  - Update PRD with explicit privacy guarantees and threat models.
-- **Data Handling**
-  - Ensure all user data is stored locally and document the storage mechanism.
-
-### C. Packaging & Distribution
-- **Automate Build**
-  - Add scripts for Tauri and PyInstaller builds.
-  - Test cross-platform packaging.
-- **Update CSP**
-  - Ensure Tauri CSP matches backend port.
-
-### D. Testing & QA
+### B. Testing & QA (High Priority)
 - **Add Backend Tests**
-  - Cover new API endpoints (`/preferences`, `/onboarding`, `/telemetry`).
+  - Cover new API endpoints (`/preferences`, `/onboarding`, `/telemetry`), including error cases.
 - **Add Frontend Tests**
-  - Cover new onboarding steps (Preferences, Completion).
+  - Add tests for local storage integration.
 - **Expand E2E Tests**
   - Cover full onboarding flow, including new features and backend interaction.
 - **Add Integration Tests**
   - Test frontend-backend integration specifically.
 
-### E. Documentation
+### C. Documentation (Medium Priority)
 - **Update PRD**
-  - Fill in open questions and log changes.
+  - Fill in open questions (update/patching strategy) and log changes.
 - **Add Feature Docs**
-  - Document onboarding flow, backend API, and packaging process.
+  - Document onboarding flow, backend API, packaging process, and local storage mechanism.
+
+### D. Code Quality (Medium Priority)
+- **Refactor Logic**
+  - Refactor repeated logic (e.g., preferences handling) for maintainability.
+- **State Management**
+  - Improve state management if onboarding grows in complexity.
+
+### E. Packaging & Distribution (Lower Priority)
+- **Automate Build**
+  - Test cross-platform packaging.
+  - Integrate build/test automation into CI.
+
+### F. Privacy & Security (Ongoing)
+- **Data Handling**
+  - Ensure all user data is stored locally and document the storage mechanism.
+- **Security**
+  - Review and document local storage and privacy guarantees.
 
 ---
 
@@ -60,13 +69,21 @@ flowchart TD
     subgraph Frontend [Tauri + React]
         A[OnboardingWizard.tsx]
         B[Other React Components]
+        G[Local Storage API]
     end
     subgraph Backend [FastAPI]
         C[main.py]
         D[Health Endpoint]
         E[Preferences/Telemetry Endpoints]
     end
-    A -- invoke, HTTP/API --> C
+    A -- invoke --> G
+    G -- read/write --> F[(User Data)]
+    A -- HTTP/API --> C
     C --> D
     C --> E
-    A -- Local Storage --> F[(User Data)]
+    C -- fallback --> F
+```
+
+---
+
+**Update this document as features, requirements, or architecture evolve.**
