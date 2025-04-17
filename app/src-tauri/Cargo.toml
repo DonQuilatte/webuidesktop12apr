@@ -24,4 +24,7 @@ log = "0.4"
 sysinfo = "0.30"
 tauri = { version = "2.4.1", features = [] }
 tauri-plugin-log = "2.0.0-rc"
-tokio = { version = "1", features = ["rt", "net"] } # Added for network check
+tokio = { version = "1", features = ["full"] } # For async runtime and file operations
+reqwest = { version = "0.12", features = ["stream", "json"] } # For HTTP requests
+futures = "0.3" # For stream processing
+chrono = "0.4" # Added for timestamp handling

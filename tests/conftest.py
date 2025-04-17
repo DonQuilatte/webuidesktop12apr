@@ -2,18 +2,17 @@ import logging
 import pytest
 import os
 
-@pytest.fixture(scope="session", autouse=True)
-def setup_environment():
-    os.environ['TELEMETRY_FILE'] = '/path/to/your/telemetry.log'
-    yield
-    if os.path.exists(os.environ['TELEMETRY_FILE']):
-        os.remove(os.environ['TELEMETRY_FILE']) 
+# Removed problematic setup_environment fixture
 
 @pytest.fixture
 def temp_files(tmp_path):
     telemetry_file = tmp_path / "telemetry.log"
-    os.environ['TELEMETRY_FILE'] = str(telemetry_file)
+    # Set env var for tests that might still expect it (though patching in test_api is better)
+    # Note: If main.py uses the env var, this fixture becomes more relevant
+    os.environ['TELEMETRY_FILE_PATH'] = str(telemetry_file)
     yield telemetry_file
+    # Cleanup env var if needed
+    # del os.environ['TELEMETRY_FILE_PATH']
 
 @pytest.fixture(autouse=True)
 def suppress_warnings(caplog):

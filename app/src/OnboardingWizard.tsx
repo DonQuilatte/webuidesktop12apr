@@ -1,6 +1,19 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import ProgressBar from './components/ProgressBar';
+import './styles/modern.css';
+import { 
+  fetchPreferences, 
+  savePreferences, 
+  saveOnboardingData,
+  submitTelemetry,
+  Preferences as PreferencesType,
+} from './services/api';
+import WelcomeStep from './components/OnboardingSteps/WelcomeStep';
+import SystemCheckStep from './components/OnboardingSteps/SystemCheckStep';
+import NetworkStatusStep from './components/OnboardingSteps/NetworkStatusStep';
+import BackendDownloadStep from './components/OnboardingSteps/BackendDownloadStep';
+import PreferencesStep from './components/OnboardingSteps/PreferencesStep';
+import SetupCompleteStep from './components/OnboardingSteps/SetupCompleteStep';
 
 const steps = [
   'Welcome & Privacy Overview',
@@ -16,15 +29,18 @@ export default function OnboardingWizard() {
 
   // System info state
   const [osInfo, setOsInfo] = useState<string | null>(null);
-  const [diskInfo, setDiskInfo] = useState<{ free: number; total: number } | null>(null);
-  const [memInfo, setMemInfo] = useState<{ free: number; total: number } | null>(null);
+  const [diskInfo, setDiskInfo] = useState<any | null>(null);
+  const [memInfo, setMemInfo] = useState<any | null>(null);
   const [sysLoading, setSysLoading] = useState(false);
   const [sysError, setSysError] = useState<string | null>(null);
+  
   // Preferences state
-  const [preferences, setPreferences] = useState<{ telemetry: boolean; theme: "light" | "dark" }>({
+  const [preferences, setPreferences] = useState<PreferencesType>({
     telemetry: false,
     theme: "light",
   });
+  const [prefsLoading, setPrefsLoading] = useState(false);
+  const [prefsSaving, setPrefsSaving] = useState(false);
 
   // Network status state
   const [isOnline, setIsOnline] = useState<boolean | null>(null);
@@ -34,45 +50,121 @@ export default function OnboardingWizard() {
   // User-facing error state
   const [userError, setUserError] = useState<string | null>(null);
 
+  // State for Step 0
+  const [privacyPolicyConsent, setPrivacyPolicyConsent] = useState(false);
+
+  // Ref to track initial render
+  const initialRender = useRef(true);
+
+  // Apply theme based on preferences
+  useEffect(() => {
+    if (preferences.theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [preferences.theme]);
+
   // Fetch initial preferences on mount
   useEffect(() => {
-    fetch('http://127.0.0.1:5002/preferences')
-      .then(res => {
-        if (!res.ok) {
-          throw new Error('Failed to fetch preferences');
-        }
-        return res.json();
-      })
-      .then(data => {
+    const getPreferences = async () => {
+      setPrefsLoading(true);
+      try {
+        const data = await fetchPreferences();
         setPreferences(data);
-      })
-      .catch(error => {
+        // Log successful preferences retrieval if telemetry is enabled
+        if (data.telemetry) {
+          await submitTelemetry('preferences_loaded', { success: true });
+        }
+      } catch (error) {
         console.error("Error fetching initial preferences:", error);
         setUserError("Failed to fetch your preferences from the server. Default preferences will be used.");
-      });
+        // Don't attempt to log telemetry here as we don't know if it's enabled
+      } finally {
+        setPrefsLoading(false);
+      }
+    };
+
+    getPreferences();
   }, []); // Empty dependency array ensures this runs only once on mount
+
+  // Save preferences when they change (debounced)
+  useEffect(() => {
+    // Skip initial render
+    if (initialRender.current) {
+      initialRender.current = false;
+      return;
+    }
+
+    // Debounce preferences saving
+    const saveTimeout = setTimeout(async () => {
+      setPrefsSaving(true);
+      try {
+        await savePreferences(preferences);
+        // Log successful preferences save if telemetry is enabled
+        if (preferences.telemetry) {
+          await submitTelemetry('preferences_saved', { success: true });
+        }
+      } catch (error) {
+        console.error("Error saving preferences:", error);
+        setUserError("Failed to save your preferences. Your changes will be applied locally but may not persist.");
+      } finally {
+        setPrefsSaving(false);
+      }
+    }, 500); // 500ms debounce
+
+    // Cleanup timeout on unmount or when preferences change again
+    return () => clearTimeout(saveTimeout);
+  }, [preferences]); // Run when preferences change
 
   useEffect(() => {
     if (step === 1) {
+      setUserError(null); // Clear previous user errors when entering step 1
       setSysLoading(true);
       setSysError(null);
       Promise.all([
-        invoke<string>('get_os_info'),
-        invoke<[number, number]>('get_disk_space'),
-        invoke<[number, number]>('get_memory_info'),
+        invoke<string>('get_os_info').catch(() => 'Unknown OS'),
+        invoke<[number, number]>('get_disk_space').catch(() => [0, 0]),
+        invoke<[number, number]>('get_memory_info').catch(() => [0, 0]),
       ])
-        .then(([os, [freeDisk, totalDisk], [freeMem, totalMem]]) => {
-          setOsInfo(os);
-          setDiskInfo({ free: freeDisk, total: totalDisk });
-          setMemInfo({ free: freeMem, total: totalMem });
+        .then((results) => {
+          try {
+            // Safely destructure with fallbacks
+            const os = typeof results[0] === 'string' ? results[0] : 'Unknown OS';
+            const [freeDisk, totalDisk] = Array.isArray(results[1]) ? results[1] : [0, 0];
+            const [freeMem, totalMem] = Array.isArray(results[2]) ? results[2] : [0, 0];
+            
+            setOsInfo(os);
+            setDiskInfo({ free: freeDisk, total: totalDisk });
+            setMemInfo({ free: freeMem, total: totalMem });
+            
+            // Log system info if telemetry is enabled
+            if (preferences.telemetry) {
+              submitTelemetry('system_info_checked', { 
+                os, 
+                disk_free_gb: (freeDisk / (1024 ** 3)).toFixed(2),
+                disk_total_gb: (totalDisk / (1024 ** 3)).toFixed(2),
+                mem_free_mb: (freeMem / (1024 ** 2)).toFixed(2),
+                mem_total_mb: (totalMem / (1024 ** 2)).toFixed(2)
+              }).catch(console.error);
+            }
+          } catch (error) {
+            console.error('Error parsing system info:', error);
+            // Set default values
+            setOsInfo('Unknown OS');
+            setDiskInfo({ free: 0, total: 0 });
+            setMemInfo({ free: 0, total: 0 });
+          }
           setSysLoading(false);
         })
-        .catch(() => {
+        .catch((error) => {
           setSysError('Failed to fetch system info');
           setSysLoading(false);
+          console.error("Error fetching system info:", error);
         });
     }
     if (step === 2) {
+      setUserError(null); // Clear previous user errors when entering step 2
       setNetLoading(true);
       setNetError(null);
       setIsOnline(null);
@@ -80,11 +172,26 @@ export default function OnboardingWizard() {
         .then((online: boolean) => {
           setIsOnline(online);
           setNetLoading(false);
+          
+          // Log network status if telemetry is enabled
+          if (preferences.telemetry) {
+            submitTelemetry('network_status_checked', { online }).catch(console.error);
+          }
         })
-        .catch(() => {
+        .catch((error) => {
           setNetError('Failed to check network status');
           setNetLoading(false);
+          console.error("Error checking network status:", error);
         });
+    }
+    if (step === 3) { // Backend Download
+      setUserError(null); // Clear errors when entering download step
+    }
+    if (step === 4) { // Preferences
+      setUserError(null); // Clear errors when entering preferences step
+    }
+    if (step === 5) { // Completion
+      setUserError(null); // Clear errors when entering completion step
     }
     // Reset info when leaving steps
     if (step !== 1) {
@@ -95,272 +202,223 @@ export default function OnboardingWizard() {
       setNetError(null);
       setNetLoading(false);
     }
-  }, [step]);
+    
+    // Log step change if telemetry is enabled
+    if (preferences.telemetry) {
+      submitTelemetry('step_changed', { step, step_name: steps[step] }).catch(console.error);
+    }
+  }, [step, preferences.telemetry]);
 
   const next = async () => {
-  // If leaving Preferences step (step 4), save preferences
-  if (step === 4) {
-    try {
-      await fetch('http://127.0.0.1:5002/preferences', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(preferences),
-      });
-    } catch (e) {
-      // Optionally handle error (e.g., show notification)
-      console.error('Failed to save preferences to backend.', e);
-      setUserError("Failed to save your preferences. Please check your connection and try again.");
-    }
-  }
-  setStep((s) => Math.min(s + 1, steps.length - 1));
-};
+    setStep((s) => Math.min(s + 1, steps.length - 1));
+  };
+  
   const back = () => setStep((s) => Math.max(s - 1, 0));
 
+  // Helper function to update preferences
+  const updatePreferences = (updates: Partial<PreferencesType>) => {
+    setPreferences(prev => ({ ...prev, ...updates }));
+  };
+
   // Helper function to submit telemetry events
-  const submitTelemetryEvent = async (event: string, details: Record<string, unknown> = {}) => {
+  const handleTelemetryEvent = useCallback(async (event: string, details: Record<string, unknown> = {}) => {
     if (!preferences.telemetry) return; // Only send if telemetry is enabled
 
     try {
-      await fetch('http://127.0.0.1:5002/telemetry', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event, details }),
-      });
-    } catch (e) {
-      console.error('Failed to submit telemetry event:', e);
-      setUserError("Failed to submit telemetry event. This will not affect your setup.");
+      await submitTelemetry(event, details);
+    } catch (error) {
+      console.error('Failed to submit telemetry event:', error);
+      // Don't show error to user for telemetry failures to avoid disrupting the experience
+    }
+  }, [preferences.telemetry]);
+
+  // Handler for privacy policy consent change
+  const handlePrivacyConsentChange = (checked: boolean) => {
+    setPrivacyPolicyConsent(checked);
+    // Optionally submit a telemetry event if needed
+    // handleTelemetryEvent('privacy_policy_consent_changed', { agreed: checked });
+  };
+
+  // Function to complete the onboarding process
+  const completeOnboarding = async () => {
+    try {
+      // Save final preferences
+      await savePreferences(preferences);
+      
+      // Notify backend onboarding is complete
+      await saveOnboardingData(preferences);
+      
+      // Submit telemetry event for onboarding completion
+      if (preferences.telemetry) {
+        await submitTelemetry('onboarding_completed', { final_preferences: preferences });
+      }
+      
+      alert('Setup Complete!');
+    } catch (error) {
+      console.error('Failed to complete onboarding:', error);
+      alert('Failed to save preferences or onboarding to backend.');
     }
   };
 
-  return (
-    <div className="max-w-2xl mx-auto p-6">
-      <h1 className="text-2xl font-bold mb-4">Setup Wizard</h1>
-      <h2 className="text-xl font-semibold mb-2">{steps[step]}</h2>
-      {userError && (
-        <div className="mb-4 p-2 bg-red-100 text-red-700 border border-red-300 rounded">
-          {userError}
-          <button
-            className="ml-2 text-xs underline"
-            onClick={() => setUserError(null)}
-            aria-label="Dismiss error"
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
-      <div className="border rounded p-4 mb-4 min-h-[150px] bg-gray-50 dark:bg-gray-800">
-        {step === 0 && (
-          <div>
-            <p className="mb-4">Welcome to the app! Before getting started, please review our privacy policy and provide your consent.</p>
-            <div className="mb-4">
-              <label className="flex items-center space-x-2">
-                <input type="checkbox" className="form-checkbox" />
-                <span>I agree to the Privacy Policy</span>
-              </label>
-            </div>
-            <div className="mb-4">
-              <label className="flex items-center space-x-2">
-                <input type="checkbox" className="form-checkbox" />
-                <span>I consent to data collection for improving the app</span>
-              </label>
-            </div>
-          </div>
-        )}
-        {step === 1 && (
-          <div>
-            <p className="mb-2 font-semibold">Operating System:</p>
-            {sysLoading ? (
-              <p>Loading system info...</p>
-            ) : sysError ? (
-              <p className="text-red-600">{sysError}</p>
-            ) : (
-              <>
-                <p>{osInfo}</p>
-                <p className="mt-4 mb-2 font-semibold">Disk Space:</p>
-                {diskInfo ? (
-                  <p>
-                    {(diskInfo.free / (1024 ** 3)).toFixed(2)} GB free / {(diskInfo.total / (1024 ** 3)).toFixed(2)} GB total
-                  </p>
-                ) : (
-                  <p>Error loading disk info.</p>
-                )}
-                <p className="mt-4 mb-2 font-semibold">Memory:</p>
-                {memInfo ? (
-                  <p>
-                    {(memInfo.free / (1024 ** 2)).toFixed(2)} MB free / {(memInfo.total / (1024 ** 2)).toFixed(2)} MB total
-                  </p>
-                ) : (
-                  <p>Error loading memory info.</p>
-                )}
-              </>
-            )}
-          </div>
-        )}
-        {step === 2 && (
-          <div>
-            <p className="mb-2 font-semibold">Network Status:</p>
-            {netLoading ? (
-              <p>Checking network status...</p>
-            ) : netError ? (
-              <p className="text-red-600">{netError}</p>
-            ) : isOnline === true ? (
-              <p className="text-green-600">✅ Online</p>
-            ) : isOnline === false ? (
-              <div>
-                <p className="text-red-600">❌ Offline</p>
-                <p className="mt-2 text-sm text-gray-600">
-                  An internet connection is required to download backend components.
-                </p>
-              </div>
-            ) : null}
-          </div>
-        )}
-        {step === 3 && (
-          <BackendDownloadStep />
-        )}
-        {step === 4 && (
-          <div>
-            <h3 className="text-lg font-semibold mb-2">Preferences & Telemetry</h3>
-            <div className="mb-4">
-              <label className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  className="form-checkbox"
-                  checked={!!preferences.telemetry}
-                  onChange={() => {
-                    const newTelemetryValue = !preferences.telemetry;
-                    setPreferences((p) => ({ ...p, telemetry: newTelemetryValue }));
-                    // Submit telemetry event immediately when changed
-                    submitTelemetryEvent('telemetry_preference_changed', { enabled: newTelemetryValue });
-                  }}
-                />
-                <span>Allow anonymous telemetry to improve the app</span>
-              </label>
-            </div>
-            <div className="mb-4">
-              <label className="flex items-center space-x-2">
-                <span>Theme:</span>
-                <select
-                  className="form-select"
-                  value={preferences.theme}
-                  onChange={(e) =>
-                    setPreferences((p) => ({ ...p, theme: e.target.value as "light" | "dark" }))
-                  }
-                >
-                  <option value="light">Light</option>
-                  <option value="dark">Dark</option>
-                </select>
-              </label>
-            </div>
-            <p className="text-sm text-gray-600">
-              You can change these preferences later in the app settings.
-            </p>
-          </div>
-        )}
-        {step === 5 && (
-          <div>
-            <h3 className="text-lg font-semibold mb-2">Setup Complete!</h3>
-            <p className="mb-4">
-              Your preferences have been saved. You are ready to use the app.
-            </p>
-            <ul className="mb-4 list-disc list-inside">
-              <li>Theme: <strong>{preferences.theme === "dark" ? "Dark" : "Light"}</strong></li>
-              <li>Telemetry: <strong>{preferences.telemetry ? "Enabled" : "Disabled"}</strong></li>
-            </ul>
-            <p className="mb-4">
-              Take a quick guided tour to learn about the main features, or click Finish to get started.
-            </p>
-            <button
-              className="px-4 py-2 rounded bg-blue-500 text-white mr-2"
-              onClick={() => alert("Guided tour coming soon!")}
-            >
-              Start Guided Tour
-            </button>
-          </div>
-        )}
-      </div>
+  // Function to handle network status check and retry
+  const checkNetwork = useCallback(async (isRetry = false) => {
+    setNetLoading(true);
+    setNetError(null); // Clear previous error
+    try {
+      const online = await invoke<boolean>('check_network_status');
+      setIsOnline(online);
+      if (isRetry) {
+        handleTelemetryEvent('network_retry', { success: online });
+      }
+    } catch (error) { 
+      const errMsg = 'Failed to check network status';
+      setNetError(errMsg);
+      setIsOnline(false);
+      console.error(errMsg, error);
+      if (isRetry) {
+        handleTelemetryEvent('network_retry', { success: false, error: errMsg });
+      }
+    } finally {
+      setNetLoading(false);
+    }
+  }, [handleTelemetryEvent]); // Added handleTelemetryEvent dependency
 
-      <div className="flex justify-between">
-        <button
-          onClick={back}
-          disabled={step === 0}
-          className="px-4 py-2 rounded bg-gray-300 dark:bg-gray-700 disabled:opacity-50"
-        >
-          Back
-        </button>
-        {step < steps.length - 1 ? (
-          <button
-            onClick={next}
-            className="px-4 py-2 rounded bg-blue-600 text-white"
-          >
-            Next
-          </button>
-        ) : (
-          <button
-            onClick={async () => {
-              try {
-                // Save preferences
-                await fetch('http://127.0.0.1:5002/preferences', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(preferences),
-                });
-                // Notify backend onboarding is complete
-                await fetch('http://127.0.0.1:5002/onboarding', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(preferences),
-                });
-                // Submit telemetry event for onboarding completion
-                submitTelemetryEvent('onboarding_completed', { final_preferences: preferences });
-                alert('Setup Complete!');
-              } catch (e) {
-                alert('Failed to save preferences or onboarding to backend.');
-              }
-            }}
-            className="px-4 py-2 rounded bg-green-600 text-white"
-          >
-            Finish
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
+  // Handler for the retry button click
+  const handleNetworkRetry = () => {
+    checkNetwork(true); // Call checkNetwork indicating it's a retry
+  };
 
-function BackendDownloadStep() {
-  const [progress, setProgress] = useState(0);
-  const [downloading, setDownloading] = useState(false);
-
-  const startDownload = () => {
-    setDownloading(true);
-    setProgress(0);
-    const interval = setInterval(() => {
-      setProgress((p) => {
-        if (p >= 100) {
-          clearInterval(interval);
-          setDownloading(false);
-          return 100;
-        }
-        return p + 5;
-      });
-    }, 300);
+  // Handler for starting the guided tour
+  const handleStartGuidedTour = () => {
+    console.log('[Test Debug] handleStartGuidedTour called. Telemetry enabled:', preferences.telemetry);
+    handleTelemetryEvent('guided_tour_started');
+    alert("Guided tour coming soon!"); // Placeholder for tour functionality
   };
 
   return (
-    <div>
-      <p className="mb-4">Downloading backend components...</p>
-      <ProgressBar value={progress} className="mb-4" />
-      <p className="mb-4">{progress}%</p>
-      {!downloading && progress < 100 && (
-        <button
-          onClick={startDownload}
-          className="px-4 py-2 rounded bg-blue-600 text-white"
-        >
-          Start Download
-        </button>
-      )}
-      {progress === 100 && <p className="text-green-600">Download complete!</p>}
+    <div className="max-w-2xl mx-auto p-6 min-h-screen flex flex-col">
+      <div className="flex-grow flex flex-col items-center justify-center animate-fade-in">
+        <h1 className="text-3xl font-bold mb-4 text-neutral-900 dark:text-neutral-50">Setup Wizard</h1>
+        <h2 className="text-xl font-semibold mb-6 text-neutral-700 dark:text-neutral-200">{steps[step]}</h2>
+        
+        {/* Step indicator */}
+        <div className="step-indicator mb-8">
+          {steps.map((_, index) => (
+            <div 
+              key={index} 
+              className={`step-dot ${index === step ? 'active' : ''} ${index < step ? 'completed' : ''}`}
+            />
+          ))}
+        </div>
+
+        {/* Loading indicator for preferences */}
+        {prefsLoading && (
+          <div className="mb-6 p-3 bg-primary-50 text-primary-600 border border-primary-200 rounded-lg flex items-center w-full max-w-lg animate-fade-in dark:bg-primary-900/20 dark:border-primary-800 dark:text-primary-400">
+            <div className="w-5 h-5 border-2 border-primary-200 border-t-primary-600 rounded-full animate-spin mr-2"></div>
+            <span>Loading your preferences...</span>
+          </div>
+        )}
+
+        {/* Saving indicator for preferences */}
+        {prefsSaving && (
+          <div className="mb-6 p-3 bg-primary-50 text-primary-600 border border-primary-200 rounded-lg flex items-center w-full max-w-lg animate-fade-in dark:bg-primary-900/20 dark:border-primary-800 dark:text-primary-400">
+            <div className="w-5 h-5 border-2 border-primary-200 border-t-primary-600 rounded-full animate-spin mr-2"></div>
+            <span>Saving your preferences...</span>
+          </div>
+        )}
+
+        {userError && (
+          <div className="mb-6 p-3 bg-red-50 text-red-600 border border-red-200 rounded-lg flex items-center justify-between w-full max-w-lg animate-fade-in dark:bg-red-900/20 dark:border-red-800 dark:text-red-400">
+            <div className="flex items-center">
+              <svg className="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+              </svg>
+              {userError}
+            </div>
+            <button
+              className="text-xs font-medium hover:underline focus:outline-none"
+              onClick={() => setUserError(null)}
+              aria-label="Dismiss error"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        <div className="modern-card p-6 mb-8 w-full max-w-lg animate-slide-up">
+          {step === 0 && (
+            <WelcomeStep 
+              telemetryConsent={preferences.telemetry}
+              onTelemetryConsentChange={(checked) => updatePreferences({ telemetry: checked })}
+              privacyPolicyConsent={privacyPolicyConsent}
+              onPrivacyPolicyConsentChange={handlePrivacyConsentChange}
+            />
+          )}
+
+          {step === 1 && (
+            <SystemCheckStep 
+              sysLoading={sysLoading}
+              sysError={sysError}
+              osInfo={osInfo}
+              diskInfo={diskInfo}
+              memInfo={memInfo}
+            />
+          )}
+
+          {step === 2 && (
+            <NetworkStatusStep 
+              netLoading={netLoading}
+              netError={netError}
+              isOnline={isOnline}
+              onRetry={handleNetworkRetry} // Pass the new handler
+            />
+          )}
+
+          {step === 3 && (
+            <BackendDownloadStep onComplete={() => handleTelemetryEvent('backend_download_completed')} />
+          )}
+
+          {step === 4 && (
+            <PreferencesStep 
+              preferences={preferences}
+              onPreferenceChange={updatePreferences} 
+              onTelemetryEvent={handleTelemetryEvent} 
+            />
+          )}
+
+          {step === 5 && (
+            <SetupCompleteStep 
+              preferences={preferences}
+              onStartGuidedTour={handleStartGuidedTour} // Pass the new handler
+            />
+          )}
+        </div>
+
+        <div className="flex justify-between w-full max-w-lg">
+          <button
+            onClick={back}
+            disabled={step === 0}
+            className="btn btn-secondary"
+          >
+            Back
+          </button>
+          {step < steps.length - 1 ? (
+            <button
+              onClick={next}
+              className="btn btn-primary"
+            >
+              Next
+            </button>
+          ) : (
+            <button
+              onClick={completeOnboarding}
+              className="btn btn-success"
+            >
+              Finish
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

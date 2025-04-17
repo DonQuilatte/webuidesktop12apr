@@ -1,12 +1,19 @@
 use std::process::{Child, Command};
-use std::sync::Mutex;
+use std::sync::{Mutex};
 use std::fs;
 use std::path::PathBuf;
-use tauri::Manager;
+use tauri::{AppHandle, Manager, Wry};
 use sysinfo::System;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use chrono::Utc;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
+use futures::stream::StreamExt;
+use reqwest;
+
+const APP_NAME: &str = "OpenWebUIOnboarding";
+const APP_AUTHOR: &str = "OpenWebUI";
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct Preferences {
@@ -21,21 +28,39 @@ struct TelemetryEvent {
     timestamp: String,
 }
 
-fn get_preferences_path() -> PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join("preferences.json")
+#[derive(Debug, Clone, Serialize, Default)]
+enum DownloadStatus {
+    #[default]
+    Idle,
+    Downloading,
+    Completed,
+    Error(String),
 }
 
-fn get_telemetry_path() -> PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join("telemetry.log")
+#[derive(Debug, Clone, Serialize, Default)]
+struct DownloadState {
+    status: DownloadStatus,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
 }
 
-fn get_onboarding_path() -> PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join("onboarding_complete.json")
+struct AppState {
+    download_state: std::sync::Arc<Mutex<DownloadState>>,
+}
+
+fn get_app_data_dir(app_handle: &AppHandle<Wry>) -> Result<PathBuf, String> {
+    app_handle.path().app_local_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))
+}
+
+fn get_app_log_dir(app_handle: &AppHandle<Wry>) -> Result<PathBuf, String> {
+    app_handle.path().app_log_dir()
+        .map_err(|e| format!("Failed to get app log dir: {}", e))
 }
 
 #[tauri::command]
-fn get_preferences() -> Result<serde_json::Value, String> {
-    let path = get_preferences_path();
+fn get_preferences(app_handle: AppHandle<Wry>) -> Result<serde_json::Value, String> {
+    let path = get_app_data_dir(&app_handle)?.join("preferences.json");
     
     if !path.exists() {
         return Ok(serde_json::json!({
@@ -74,8 +99,8 @@ fn get_preferences() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-fn save_preferences(preferences: Preferences) -> Result<serde_json::Value, String> {
-    let path = get_preferences_path();
+fn save_preferences(app_handle: AppHandle<Wry>, preferences: Preferences) -> Result<serde_json::Value, String> {
+    let path = get_app_data_dir(&app_handle)?.join("preferences.json");
     
     if let Some(parent) = path.parent() {
         if !parent.exists() {
@@ -94,8 +119,8 @@ fn save_preferences(preferences: Preferences) -> Result<serde_json::Value, Strin
 }
 
 #[tauri::command]
-fn save_onboarding_data(data: Preferences) -> Result<serde_json::Value, String> {
-    let path = get_onboarding_path();
+fn save_onboarding_data(app_handle: AppHandle<Wry>, data: Preferences) -> Result<serde_json::Value, String> {
+    let path = get_app_data_dir(&app_handle)?.join("onboarding_complete.json");
     
     if let Some(parent) = path.parent() {
         if !parent.exists() {
@@ -120,8 +145,8 @@ fn save_onboarding_data(data: Preferences) -> Result<serde_json::Value, String> 
 }
 
 #[tauri::command]
-fn store_telemetry_event(event: String, details: HashMap<String, serde_json::Value>) -> Result<serde_json::Value, String> {
-    let path = get_telemetry_path();
+fn store_telemetry_event(app_handle: AppHandle<Wry>, event: String, details: HashMap<String, serde_json::Value>) -> Result<serde_json::Value, String> {
+    let path = get_app_log_dir(&app_handle)?.join("telemetry.log");
     
     if let Some(parent) = path.parent() {
         if !parent.exists() {
@@ -184,6 +209,105 @@ async fn check_network_status() -> bool {
 
 struct BackendProcess(Mutex<Option<Child>>);
 
+#[tauri::command]
+async fn start_backend_download(app_handle: AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    log::info!("Attempting to start backend download...");
+    
+    let download_url = "https://github.com/9apropenwebui/models/releases/download/latest/ggml-gpt4all-j-v1.3-groovy.bin"; // Example URL
+    let mut target_file_path = match app_handle.path().app_local_data_dir() { // Returns Result<PathBuf, Error>
+        Ok(dir) => dir, // Use Ok() for success case
+        Err(e) => return Err(format!("Could not get app local data directory: {}", e).into()), // Use Err() for error case
+    };
+    if !target_file_path.exists() {
+        fs::create_dir_all(&target_file_path).map_err(|e| format!("Failed to create data dir: {}", e))?;
+    }
+    target_file_path.push("backend_model.bin"); // Example filename
+    
+    log::info!("Target download path: {}", target_file_path.display());
+    
+    let state_clone = std::sync::Arc::clone(&state.download_state);
+    
+    // Update state immediately to Downloading
+    {
+        let mut state_lock = state_clone.lock().unwrap();
+        *state_lock = DownloadState {
+            status: DownloadStatus::Downloading,
+            downloaded_bytes: 0,
+            total_bytes: None, // Will be set once response headers are received
+        };
+    }
+    
+    // Spawn the download task
+    tokio::spawn(async move {
+        log::info!("Download task started for URL: {}", download_url);
+        match download_file(download_url, target_file_path, state_clone.clone()).await {
+            Ok(_) => {
+                log::info!("Download task completed successfully.");
+                let mut state_lock = state_clone.lock().unwrap();
+                state_lock.status = DownloadStatus::Completed;
+            }
+            Err(e) => {
+                log::error!("Download task failed: {}", e);
+                let mut state_lock = state_clone.lock().unwrap();
+                state_lock.status = DownloadStatus::Error(e.to_string());
+            }
+        }
+    });
+    
+    Ok(())
+}
+
+#[tauri::command]
+fn check_backend_download_progress(state: tauri::State<'_, AppState>) -> Result<u8, String> {
+    let state_lock = state.download_state.lock().unwrap();
+    match state_lock.status {
+        DownloadStatus::Idle => Ok(0),
+        DownloadStatus::Downloading => {
+            let downloaded = state_lock.downloaded_bytes;
+            let total = state_lock.total_bytes;
+            if let Some(total) = total {
+                if total == 0 { Ok(0) }
+                else { Ok(((downloaded * 100) / total) as u8) }
+            }
+            else { Ok(0) } // Return 0 if total size isn't known yet
+        }
+        DownloadStatus::Completed => Ok(100),
+        DownloadStatus::Error(_) => Ok(0), // Or maybe a specific error code?
+    }
+}
+
+// Helper function for the actual download logic
+async fn download_file(url: &str, path: PathBuf, state: std::sync::Arc<Mutex<DownloadState>>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let client = reqwest::Client::new();
+    let response = client.get(url).send().await?.error_for_status()?; // Ensure we check for HTTP errors
+    
+    let total_size = response.content_length();
+    {
+        let mut state_lock = state.lock().unwrap();
+        state_lock.total_bytes = total_size;
+        if total_size.is_none() {
+             log::warn!("Content-Length header not found. Progress percentage may be inaccurate.");
+        }
+    }
+    
+    let mut file = File::create(&path).await?;
+    let mut stream = response.bytes_stream();
+    let mut downloaded: u64 = 0;
+    
+    while let Some(item) = stream.next().await {
+        let chunk = item?;
+        file.write_all(&chunk).await?;
+        downloaded += chunk.len() as u64;
+        {
+            let mut state_lock = state.lock().unwrap();
+            state_lock.downloaded_bytes = downloaded;
+            // Optional: Add throttling here if state updates are too frequent
+        }
+    }
+    log::info!("Finished writing to file: {}", path.display());
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -195,12 +319,17 @@ pub fn run() {
       get_preferences,
       save_preferences,
       save_onboarding_data,
-      store_telemetry_event
+      store_telemetry_event,
+      start_backend_download,
+      check_backend_download_progress
     ])
     .manage(BackendProcess(Mutex::new(None)))
     .setup(|app| {
       let backend_state = app.state::<BackendProcess>();
-
+      
+      let current_dir_debug = std::env::current_dir();
+      println!("Tauri setup current_dir: {:?}", current_dir_debug);
+      
       if cfg!(debug_assertions) {
         app.handle().plugin(
           tauri_plugin_log::Builder::default()
@@ -208,25 +337,66 @@ pub fn run() {
             .build(),
         )?;
       }
-
+      
+      // Add the download state management
+      let initial_state = AppState { download_state: std::sync::Arc::new(Mutex::new(DownloadState::default())) };
+      app.manage(initial_state);
+      
       // Spawn backend Python process
-      let backend_path = std::env::current_dir()
-        .map(|dir| dir
-          .parent().unwrap_or(&dir)
-          .parent().unwrap_or(&dir)
-          .join("backend")
-          .join("main.py"));
-
-      let result = match backend_path {
-        Ok(path) => Command::new("python3")
-          .arg(path)
-          .spawn(),
-        Err(e) => {
-          eprintln!("Failed to resolve backend path: {:?}", e);
+      let project_root = std::env::current_dir()
+        .map_err(|e| format!("Failed to get current dir: {:?}", e))
+        .and_then(|dir| dir.parent().ok_or_else(|| "Failed to get parent dir (1)".to_string()).map(|p| p.to_path_buf()))
+        .and_then(|dir| dir.parent().ok_or_else(|| "Failed to get parent dir (2)".to_string()).map(|p| p.to_path_buf()));
+      
+      println!("Calculated project_root: {:?}", project_root);
+      
+      let backend_path = project_root.as_ref()
+          .map(|root| root.join("backend").join("main.py"))
+          .map_err(|e| format!("Failed to get project root: {:?}", e));
+      
+      #[cfg(unix)]
+      let python_executable = project_root.as_ref()
+          .map(|root| root.join(".venv").join("bin").join("python"))
+          .map_err(|e| format!("Failed to get project root for python: {:?}", e));
+      
+      #[cfg(windows)]
+      let python_executable = project_root.as_ref()
+          .map(|root| root.join(".venv").join("Scripts").join("python.exe"))
+          .map_err(|e| format!("Failed to get project root for python: {:?}", e));
+      
+      println!("Resolved python_executable: {:?}", python_executable);
+      println!("Resolved backend_path: {:?}", backend_path);
+      
+      let result = match (backend_path, python_executable) {
+        (Ok(backend_path), Ok(python_executable)) => {
+          if !python_executable.exists() {
+            eprintln!("Error: Python executable not found at {:?}. Make sure the .venv exists and is correctly structured.", python_executable);
+            if let Ok(proj_root) = &project_root {
+                let venv_path_check = proj_root.join(".venv");
+                println!("Checking for .venv at: {:?}", venv_path_check);
+                println!(".venv exists: {}", venv_path_check.exists());
+            }
+            return Ok(());
+          }
+          // Get the directory of the backend script
+          let backend_dir = backend_path.parent().ok_or_else(|| "Failed to get backend directory".to_string())?;
+          println!("Setting backend process CWD to: {:?}", backend_dir); // Debug CWD
+          
+          Command::new(python_executable)
+            .arg(&backend_path) // Pass the full path as arg
+            .current_dir(backend_dir) // Set CWD to the backend folder
+            .spawn()
+        }
+        (Err(e), _) => {
+          eprintln!("Failed to resolve backend path: {}", e);
+          return Ok(());
+        }
+        (_, Err(e)) => {
+          eprintln!("Failed to resolve python executable path: {}", e);
           return Ok(());
         }
       };
-
+      
       match result {
         Ok(child) => {
           println!("Backend process started successfully");
@@ -236,7 +406,7 @@ pub fn run() {
           eprintln!("Failed to start backend process: {:?}", e);
         }
       }
-
+      
       Ok(())
     })
     .on_window_event(|window, event| { 

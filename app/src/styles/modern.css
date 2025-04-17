@@ -1,0 +1,331 @@
+/* Modern UI styles */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+:root {
+  --background-gradient: linear-gradient(135deg, #f8fafc 0%, #e0f2fe 100%);
+  --card-background: rgba(255, 255, 255, 0.8);
+  --card-border: rgba(209, 213, 219, 0.3);
+  --transition-standard: all 0.2s ease-in-out;
+}
+
+.dark {
+  --background-gradient: linear-gradient(135deg, #0f172a 0%, #082f49 100%);
+  --card-background: rgba(30, 41, 59, 0.8);
+  --card-border: rgba(55, 65, 81, 0.3);
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  background: var(--background-gradient);
+  min-height: 100vh;
+}
+
+/* Custom checkbox styles */
+.custom-checkbox {
+  position: relative;
+  cursor: pointer;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.custom-checkbox input {
+  position: absolute;
+  opacity: 0;
+  cursor: pointer;
+  height: 0;
+  width: 0;
+}
+
+.checkmark {
+  height: 22px;
+  width: 22px;
+  background-color: #fff;
+  border: 2px solid #cbd5e1;
+  border-radius: 6px;
+  transition: var(--transition-standard);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dark .checkmark {
+  background-color: #1e293b;
+  border-color: #475569;
+}
+
+.custom-checkbox:hover input ~ .checkmark {
+  border-color: #94a3b8;
+}
+
+.custom-checkbox input:checked ~ .checkmark {
+  background-color: #0ea5e9;
+  border-color: #0ea5e9;
+}
+
+.checkmark:after {
+  content: "";
+  position: absolute;
+  display: none;
+  width: 5px;
+  height: 10px;
+  border: solid white;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.custom-checkbox input:checked ~ .checkmark:after {
+  display: block;
+}
+
+/* Custom select styles */
+.custom-select {
+  position: relative;
+  display: inline-block;
+}
+
+.custom-select select {
+  appearance: none;
+  background-color: #fff;
+  border: 2px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 0.5rem 2rem 0.5rem 1rem;
+  font-size: 0.875rem;
+  transition: var(--transition-standard);
+  cursor: pointer;
+  min-width: 120px;
+}
+
+.dark .custom-select select {
+  background-color: #1e293b;
+  border-color: #475569;
+  color: #f1f5f9;
+}
+
+.custom-select:after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 5px solid #64748b;
+  pointer-events: none;
+}
+
+.custom-select select:focus {
+  outline: none;
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.2);
+}
+
+/* Card styles */
+.modern-card {
+  background: var(--card-background);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--card-border);
+  border-radius: 16px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  transition: var(--transition-standard);
+}
+
+.modern-card:hover {
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+}
+
+/* Button styles */
+.btn {
+  font-weight: 500;
+  border-radius: 10px;
+  padding: 0.625rem 1.25rem;
+  transition: var(--transition-standard);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.btn-primary {
+  background-color: #0ea5e9;
+  color: white;
+}
+
+.btn-primary:hover {
+  background-color: #0284c7;
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background-color: #f1f5f9;
+  color: #334155;
+}
+
+.dark .btn-secondary {
+  background-color: #334155;
+  color: #f1f5f9;
+}
+
+.btn-secondary:hover {
+  background-color: #e2e8f0;
+  transform: translateY(-1px);
+}
+
+.dark .btn-secondary:hover {
+  background-color: #475569;
+}
+
+.btn-success {
+  background-color: #10b981;
+  color: white;
+}
+
+.btn-success:hover {
+  background-color: #059669;
+  transform: translateY(-1px);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Progress indicator */
+.step-indicator {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 2rem;
+  gap: 0.5rem;
+}
+
+.step-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: #cbd5e1;
+  transition: var(--transition-standard);
+}
+
+.step-dot.active {
+  background-color: #0ea5e9;
+  transform: scale(1.2);
+}
+
+.step-dot.completed {
+  background-color: #10b981;
+}
+
+/* Status indicators */
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 9999px;
+  font-weight: 500;
+  font-size: 0.875rem;
+}
+
+.status-success {
+  background-color: rgba(16, 185, 129, 0.1);
+  color: #10b981;
+}
+
+.status-error {
+  background-color: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+
+.status-warning {
+  background-color: rgba(245, 158, 11, 0.1);
+  color: #f59e0b;
+}
+
+.status-info {
+  background-color: rgba(14, 165, 233, 0.1);
+  color: #0ea5e9;
+}
+
+/* Modern progress bar */
+.modern-progress-container {
+  width: 100%;
+  height: 10px;
+  background-color: #e2e8f0;
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.dark .modern-progress-container {
+  background-color: #334155;
+}
+
+.modern-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #0ea5e9, #8b5cf6);
+  border-radius: 9999px;
+  transition: width 0.3s ease;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.5s ease forwards;
+}
+
+@keyframes slideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.animate-slide-up {
+  animation: slideUp 0.5s ease forwards;
+}
+
+/* System info cards */
+.system-info-card {
+  display: flex;
+  flex-direction: column;
+  background-color: rgba(255, 255, 255, 0.5);
+  padding: 1rem;
+  border-radius: 12px;
+  margin-bottom: 1rem;
+  border: 1px solid rgba(203, 213, 225, 0.5);
+}
+
+.dark .system-info-card {
+  background-color: rgba(30, 41, 59, 0.5);
+  border-color: rgba(71, 85, 105, 0.5);
+}
+
+.system-info-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  margin-bottom: 0.25rem;
+}
+
+.dark .system-info-label {
+  color: #94a3b8;
+}
+
+.system-info-value {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #334155;
+}
+
+.dark .system-info-value {
+  color: #f1f5f9;
+}
